@@ -4,13 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       IMAGES_LIST:
-        description: '镜像列表 (格式: 原镜像:版本,新镜像名:版本。每行一个)'
+        description: '镜像列表 (格式: 原镜像:版本,新镜像名:版本; 多个镜像用分号隔离)'
         required: true
-        default: |
-          docker.n8n.io/n8nio/n8n,n8n:latest
-          postgres:16,postgres:16
-          jauderho/yt-dlp:latest,yt-dlp:latest
-          ghcr.io/mhsanaei/3x-ui:latest,3x-ui:latest
+        default: 'docker.n8n.io/n8nio/n8n,n8n:latest;postgres:16,postgres:16;jauderho/yt-dlp:latest,yt-dlp:latest;ghcr.io/mhsanaei/3x-ui:latest,3x-ui:latest'
       TARGET_REGISTRY:
         description: '仓库地址'
         required: true
@@ -38,21 +34,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: 登录到 Docker 仓库
-        id: login
         run: |
           echo "${{ secrets.DOCKER_PASSWORD }}" | docker login ${{ github.event.inputs.TARGET_REGISTRY }} -u ${{ secrets.DOCKER_USERNAME }} --password-stdin
 
-      - name: 批量拉取、标记并推送
+      - name: 解析并批量执行
         run: |
-          # 将输入的多行文本按行读取
-          echo "${{ github.event.inputs.IMAGES_LIST }}" | while IFS=',' read -r OLD_IMAGE NEW_IMAGE || [ -n "$OLD_IMAGE" ]; do
-            # 去除首尾空格
+          # 1. 将分号替换为换行符，方便循环处理
+          # 2. 遍历每一个 镜像对
+          echo "${{ github.event.inputs.IMAGES_LIST }}" | tr ';' '\n' | while IFS=',' read -r OLD_IMAGE NEW_IMAGE || [ -n "$OLD_IMAGE" ]; do
+            
+            # 去除首尾多余空格
             OLD_IMAGE=$(echo $OLD_IMAGE | xargs)
             NEW_IMAGE=$(echo $NEW_IMAGE | xargs)
             
             if [ -z "$OLD_IMAGE" ]; then continue; fi
             
-            # 如果没有提供新名称，则默认使用原镜像名
+            # 自动补全：如果没有指定新名字，则取原镜像最后一部分
             if [ -z "$NEW_IMAGE" ]; then
               NEW_IMAGE=$(echo $OLD_IMAGE | awk -F'/' '{print $NF}')
             fi
@@ -60,14 +57,15 @@ jobs:
             FULL_NEW_IMAGE="${{ github.event.inputs.TARGET_REGISTRY }}/${{ github.event.inputs.TARGET_REPOSITORY }}/${NEW_IMAGE}"
 
             echo "------------------------------------------"
-            echo "正在处理: $OLD_IMAGE -> $FULL_NEW_IMAGE"
+            echo "正在处理: $OLD_IMAGE"
+            echo "目标地址: $FULL_NEW_IMAGE"
             
             # 执行 Docker 操作
             if docker pull --platform ${{ github.event.inputs.ARCH }} $OLD_IMAGE; then
               docker tag $OLD_IMAGE $FULL_NEW_IMAGE
               docker push $FULL_NEW_IMAGE
-              echo "✅ 成功推送: $FULL_NEW_IMAGE"
+              echo "✅ 推送成功"
             else
-              echo "❌ 拉取失败: $OLD_IMAGE"
+              echo "❌ 拉取失败，请检查镜像名是否存在"
             fi
           done
