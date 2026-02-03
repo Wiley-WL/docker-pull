@@ -1,16 +1,16 @@
-name: 拉取镜像推送
+name: 批量拉取镜像并推送
 
 on:
   workflow_dispatch:
     inputs:
-      IMAGE_NAME:
-        description: '原镜像名称:版本'
+      IMAGES_LIST:
+        description: '镜像列表 (格式: 原镜像:版本,新镜像名:版本。每行一个)'
         required: true
-        default: 'mysql/mysql-server'
-      NEW_NAME:
-        description: '同步后镜像名称:版本'
-        required: true
-        default: 'mysql-server'
+        default: |
+          docker.n8n.io/n8nio/n8n,n8n:latest
+          postgres:16,postgres:16
+          jauderho/yt-dlp:latest,yt-dlp:latest
+          ghcr.io/mhsanaei/3x-ui:latest,3x-ui:latest
       TARGET_REGISTRY:
         description: '仓库地址'
         required: true
@@ -39,29 +39,35 @@ jobs:
     steps:
       - name: 登录到 Docker 仓库
         id: login
-        run: docker login -u ${{ secrets.DOCKER_USERNAME }} -p ${{ secrets.DOCKER_PASSWORD }} ${{ github.event.inputs.TARGET_REGISTRY }}
-        continue-on-error: true
-
-      - name: 检查 Docker 登录成功
-        if: ${{ steps.login.outcome == 'success' }}
-        run: echo "Docker 登录成功"
-
-      - name: 检查 Docker 登录失败
-        if: ${{ steps.login.outcome != 'success' }}
-        run: echo "Docker 登录失败"
-
-      - name: 拉取、标记并推送 Docker 镜像
-        id: pull_tag_push
         run: |
-          docker pull --platform ${{ github.event.inputs.ARCH }} ${{ github.event.inputs.IMAGE_NAME }}
-          docker tag ${{ github.event.inputs.IMAGE_NAME }} ${{ github.event.inputs.TARGET_REGISTRY }}/${{ github.event.inputs.TARGET_REPOSITORY }}/${{ github.event.inputs.NEW_NAME }}
-          docker push ${{ github.event.inputs.TARGET_REGISTRY }}/${{ github.event.inputs.TARGET_REPOSITORY }}/${{ github.event.inputs.NEW_NAME }}
-        continue-on-error: true
+          echo "${{ secrets.DOCKER_PASSWORD }}" | docker login ${{ github.event.inputs.TARGET_REGISTRY }} -u ${{ secrets.DOCKER_USERNAME }} --password-stdin
 
-      - name: 检查镜像推送成功
-        if: ${{ steps.pull_tag_push.outcome == 'success' }}
-        run: echo "Docker 镜像推送成功"
+      - name: 批量拉取、标记并推送
+        run: |
+          # 将输入的多行文本按行读取
+          echo "${{ github.event.inputs.IMAGES_LIST }}" | while IFS=',' read -r OLD_IMAGE NEW_IMAGE || [ -n "$OLD_IMAGE" ]; do
+            # 去除首尾空格
+            OLD_IMAGE=$(echo $OLD_IMAGE | xargs)
+            NEW_IMAGE=$(echo $NEW_IMAGE | xargs)
+            
+            if [ -z "$OLD_IMAGE" ]; then continue; fi
+            
+            # 如果没有提供新名称，则默认使用原镜像名
+            if [ -z "$NEW_IMAGE" ]; then
+              NEW_IMAGE=$(echo $OLD_IMAGE | awk -F'/' '{print $NF}')
+            fi
 
-      - name: 检查镜像推送失败
-        if: ${{ steps.pull_tag_push.outcome != 'success' }}
-        run: echo "Docker 镜像推送失败"
+            FULL_NEW_IMAGE="${{ github.event.inputs.TARGET_REGISTRY }}/${{ github.event.inputs.TARGET_REPOSITORY }}/${NEW_IMAGE}"
+
+            echo "------------------------------------------"
+            echo "正在处理: $OLD_IMAGE -> $FULL_NEW_IMAGE"
+            
+            # 执行 Docker 操作
+            if docker pull --platform ${{ github.event.inputs.ARCH }} $OLD_IMAGE; then
+              docker tag $OLD_IMAGE $FULL_NEW_IMAGE
+              docker push $FULL_NEW_IMAGE
+              echo "✅ 成功推送: $FULL_NEW_IMAGE"
+            else
+              echo "❌ 拉取失败: $OLD_IMAGE"
+            fi
+          done
